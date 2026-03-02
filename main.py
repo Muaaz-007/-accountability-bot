@@ -254,4 +254,93 @@ async def deadlines(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def clear_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    if user_id in
+        if user_id in tasks:
+        tasks[user_id] = [t for t in tasks[user_id] if t.get("status") != "completed"]
+        save_data(TASKS_FILE, tasks)
+    await update.message.reply_text("Cleared completed tasks. Now get back to work. ✨")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    save_chat_id(str(user_id), update.effective_chat.id)
+    message = update.message.text
+    response = await get_ai_response(user_id, message)
+    await update.message.reply_text(response)
+
+# ============ PROACTIVE CHECK-INS ============
+async def proactive_checkin(context):
+    chat_ids = get_chat_ids()
+
+    for user_id, chat_id in chat_ids.items():
+        user_tasks = tasks.get(user_id, [])
+        pending = [t for t in user_tasks if t.get("status") == "pending"]
+
+        if not pending:
+            continue
+
+        user_history = chat_history.get(user_id, [])
+        if user_history:
+            try:
+                last_time = datetime.fromisoformat(user_history[-1]["time"])
+                if datetime.now() - last_time < timedelta(hours=1):
+                    continue
+            except:
+                pass
+
+        if random.random() > 0.4:
+            continue
+
+        tasks_str = json.dumps(pending, indent=2)
+        recent = user_history[-10:] if user_history else []
+        history_str = "\n".join([f"{'User' if m['role']=='user' else 'Coach'}: {m['text']}" for m in recent])
+
+        prompt = f"""You are Coach — Muaaz's brutally honest accountability partner. You talk like an older brother from Bradford who made it and refuses to let him waste his potential.
+
+His pending tasks: {tasks_str}
+Recent chat: {history_str}
+
+Send a SHORT natural check-in (1-2 sentences). Be casual like a real older brother texting.
+Key rules:
+- British/Bradford casual tone
+- Be specific about a task and its deadline
+- If a deadline is close, be urgent and sharp
+- Call out avoidance patterns if you see them
+- Reference his goals (Cambridge, FYP, YouTube, football)
+- No flattery, no generic motivation
+- Sometimes roast him if he's been quiet too long"""
+
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.9,
+                max_tokens=200,
+            )
+            msg = response.choices[0].message.content.strip()
+
+            await context.bot.send_message(chat_id=int(chat_id), text=msg)
+
+            if user_id not in chat_history:
+                chat_history[user_id] = []
+            chat_history[user_id].append({"role": "bot", "text": msg, "time": datetime.now().isoformat()})
+            save_data(CHAT_FILE, chat_history)
+        except Exception as e:
+            print(f"Checkin error {user_id}: {e}")
+
+# ============ START BOT ============
+def main():
+    print("🤖 Starting bot...")
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("tasks", my_tasks))
+    app.add_handler(CommandHandler("clear", clear_done))
+    app.add_handler(CommandHandler("deadlines", deadlines))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    app.job_queue.run_repeating(proactive_checkin, interval=1800, first=60)
+
+    print("🤖 Coach is alive and watching you...")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
